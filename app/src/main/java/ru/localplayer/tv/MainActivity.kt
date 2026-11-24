@@ -11,14 +11,11 @@ import android.text.TextUtils
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
-import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.*
 import androidx.annotation.OptIn
 import androidx.core.content.edit
-import androidx.media3.common.AudioAttributes
 import androidx.media3.common.MediaItem
-import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -41,23 +38,17 @@ class MainActivity : Activity() {
     private lateinit var header: LinearLayout
     private lateinit var content: LinearLayout
     private lateinit var status: TextView
-    private lateinit var nowPlayingLabel: TextView
 
     private lateinit var playerContainer: FrameLayout
     private lateinit var playerView: PlayerView
     private lateinit var playerOverlayBar: LinearLayout
     private lateinit var playerTitle: TextView
     private lateinit var resizeButton: Button
-    private lateinit var playerMusicButton: Button
 
     private lateinit var videoPlayer: ExoPlayer
-    private lateinit var musicPlayer: ExoPlayer
 
     private var baseUrl = ""
     private var videos = listOf<MediaFile>()
-    private var music = listOf<MediaFile>()
-    private var musicEnabled = false
-    private var currentMusicIndex = -1
     private var isShowingPlayer = false
 
     private val resizeModes = listOf(
@@ -76,15 +67,6 @@ class MainActivity : Activity() {
         buildUi()
 
         videoPlayer = ExoPlayer.Builder(this).build()
-        musicPlayer = ExoPlayer.Builder(this).build().apply {
-            setAudioAttributes(AudioAttributes.DEFAULT, false)
-            addListener(object : Player.Listener {
-                override fun onPlaybackStateChanged(playbackState: Int) {
-                    if (playbackState == Player.STATE_ENDED && musicEnabled) playNextMusic()
-                }
-            })
-        }
-
         playerView.player = videoPlayer
         applyResizeMode()
         loadLibrary()
@@ -121,7 +103,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
         }
         val appTitle = TextView(this).apply {
-            text = "▶  LOCAL PLAYER TV"
+            text = "▶  LOCAL PLAYER"
             textSize = 20f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(0xFFF8FAFC.toInt())
@@ -132,22 +114,12 @@ class MainActivity : Activity() {
             textSize = 13f
             setTextColor(0xFF94A3B8.toInt())
         }
-        nowPlayingLabel = TextView(this).apply {
-            text = ""
-            textSize = 13f
-            setTextColor(0xFF38BDF8.toInt())
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-            visibility = View.GONE
-        }
         titleBlock.addView(appTitle)
         titleBlock.addView(status)
-        titleBlock.addView(nowPlayingLabel)
 
         header.addView(titleBlock, LinearLayout.LayoutParams(0, -2, 1f))
         header.addView(pillButton("⚙ Сервер") { showServerSettings() }, marginRight(10))
-        header.addView(pillButton("↻ Обновить") { loadLibrary() }, marginRight(10))
-        header.addView(pillButton("♫ Музыка: Выкл") { toggleMusic() }.also { it.tag = "music" })
+        header.addView(pillButton("↻ Обновить") { loadLibrary() })
 
         libraryContainer.addView(header, LinearLayout.LayoutParams(-1, -2).apply {
             bottomMargin = dp(18)
@@ -205,12 +177,8 @@ class MainActivity : Activity() {
             cycleResizeMode()
             playerView.showController()
         }
-        playerMusicButton = pillButton("♫ Музыка: Выкл") {
-            toggleMusic()
-            playerView.showController()
-        }
 
-        listOf(backBtn, resizeButton, playerMusicButton).forEach { btn ->
+        listOf(backBtn, resizeButton).forEach { btn ->
             val oldListener = btn.onFocusChangeListener
             btn.setOnFocusChangeListener { v, hasFocus ->
                 oldListener?.onFocusChange(v, hasFocus)
@@ -220,8 +188,7 @@ class MainActivity : Activity() {
 
         playerOverlayBar.addView(backBtn)
         playerOverlayBar.addView(playerTitle, LinearLayout.LayoutParams(0, -2, 1f))
-        playerOverlayBar.addView(resizeButton, marginRight(10))
-        playerOverlayBar.addView(playerMusicButton)
+        playerOverlayBar.addView(resizeButton)
 
         playerContainer.addView(
             playerOverlayBar,
@@ -240,14 +207,8 @@ class MainActivity : Activity() {
         libraryContainer.visibility = View.VISIBLE
 
         content.removeAllViews()
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            clipChildren = false
-            clipToPadding = false
-        }
 
-        // Левая колонка: ВИДЕО
-        val left = createColumnPanel("ВИДЕО", videos.size)
+        val panel = createColumnPanel("ВИДЕО", videos.size)
         val videoScroll = ScrollView(this).apply {
             isVerticalScrollBarEnabled = false
             clipChildren = false
@@ -264,52 +225,16 @@ class MainActivity : Activity() {
             videoList.addView(emptyHint("Нет видеофайлов или сервер недоступен"))
         } else {
             videos.forEachIndexed { index, item ->
-                val card = mediaCard("▶", item.name, isVideo = true) { playVideo(index) }
+                val card = mediaCard(item.name) { playVideo(index) }
                 videoList.addView(card, LinearLayout.LayoutParams(-1, -2).apply {
                     bottomMargin = dp(8)
                 })
             }
         }
         videoScroll.addView(videoList)
-        left.addView(videoScroll, LinearLayout.LayoutParams(-1, 0, 1f))
-        row.addView(left, LinearLayout.LayoutParams(0, -1, 1.3f))
+        panel.addView(videoScroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        content.addView(panel, LinearLayout.LayoutParams(-1, -1))
 
-        // Правая колонка: ФОНОВАЯ МУЗЫКА
-        val right = createColumnPanel("ФОНОВАЯ МУЗЫКА", music.size)
-        val musicScroll = ScrollView(this).apply {
-            isVerticalScrollBarEnabled = false
-            clipChildren = false
-            clipToPadding = false
-        }
-        val musicList = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(4), dp(4), dp(4), dp(8))
-            clipChildren = false
-            clipToPadding = false
-        }
-
-        if (music.isEmpty()) {
-            musicList.addView(emptyHint("В папке music нет треков"))
-        } else {
-            music.forEachIndexed { index, item ->
-                val card = mediaCard("♪", item.name, isVideo = false) {
-                    currentMusicIndex = index
-                    musicEnabled = true
-                    startMusic()
-                    updateMusicUi()
-                }
-                musicList.addView(card, LinearLayout.LayoutParams(-1, -2).apply {
-                    bottomMargin = dp(8)
-                })
-            }
-        }
-        musicScroll.addView(musicList)
-        right.addView(musicScroll, LinearLayout.LayoutParams(-1, 0, 1f))
-        row.addView(right, LinearLayout.LayoutParams(0, -1, 0.9f).apply {
-            marginStart = dp(18)
-        })
-
-        content.addView(row, LinearLayout.LayoutParams(-1, -1))
         if (videos.isNotEmpty()) {
             videoList.getChildAt(0)?.requestFocus()
         } else {
@@ -363,11 +288,9 @@ class MainActivity : Activity() {
         io.execute {
             try {
                 val newVideos = fetchList("/api/videos")
-                val newMusic = fetchList("/api/music")
                 runOnUiThread {
                     videos = newVideos
-                    music = newMusic
-                    status.text = "Сервер: $baseUrl  •  Видео: ${videos.size}  •  Музыка: ${music.size}"
+                    status.text = "Сервер: $baseUrl  •  Видео: ${videos.size}"
                     showLibrary()
                 }
             } catch (e: Exception) {
@@ -406,55 +329,6 @@ class MainActivity : Activity() {
         videoPlayer.prepare()
         videoPlayer.playWhenReady = true
         showPlayer(item.name)
-    }
-
-    private fun startMusic() {
-        if (music.isEmpty() || currentMusicIndex !in music.indices) return
-        val item = music[currentMusicIndex]
-        musicPlayer.setMediaItem(MediaItem.fromUri(mediaUrl("music", item.path)))
-        musicPlayer.prepare()
-        musicPlayer.playWhenReady = true
-        updateMusicUi()
-    }
-
-    private fun playNextMusic() {
-        if (music.isEmpty()) return
-        val next = if (music.size == 1) 0 else {
-            var n = (0 until music.size).random()
-            while (n == currentMusicIndex) n = (0 until music.size).random()
-            n
-        }
-        currentMusicIndex = next
-        startMusic()
-    }
-
-    private fun toggleMusic() {
-        if (musicEnabled) {
-            musicEnabled = false
-            musicPlayer.pause()
-        } else {
-            if (music.isEmpty()) {
-                Toast.makeText(this, "В папке music нет треков", Toast.LENGTH_SHORT).show()
-                return
-            }
-            musicEnabled = true
-            if (currentMusicIndex < 0) currentMusicIndex = music.indices.random()
-            if (musicPlayer.mediaItemCount == 0) startMusic() else musicPlayer.play()
-        }
-        updateMusicUi()
-    }
-
-    private fun updateMusicUi() {
-        val label = if (musicEnabled) "♫ Музыка: Вкл" else "♫ Музыка: Выкл"
-        header.findViewWithTag<Button>("music")?.text = label
-        playerMusicButton.text = label
-        val currentTrack = music.getOrNull(currentMusicIndex)?.name
-        if (musicEnabled && currentTrack != null) {
-            nowPlayingLabel.text = "♪ Сейчас играет: $currentTrack"
-            nowPlayingLabel.visibility = View.VISIBLE
-        } else {
-            nowPlayingLabel.visibility = View.GONE
-        }
     }
 
     private fun mediaUrl(folder: String, path: String): String {
@@ -532,37 +406,33 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun mediaCard(icon: String, title: String, isVideo: Boolean, onClick: () -> Unit): LinearLayout {
+    private fun mediaCard(title: String, onClick: () -> Unit): LinearLayout {
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             isFocusable = true
             isClickable = true
-            setPadding(dp(14), dp(12), dp(14), dp(12))
+            setPadding(dp(16), dp(14), dp(16), dp(14))
             background = selectableCardBg(radiusDp = 12)
             setOnClickListener { onClick() }
             attachFocusScale(this)
 
             val iconBadge = TextView(this@MainActivity).apply {
-                text = icon
-                textSize = if (isVideo) 14f else 15f
+                text = "▶"
+                textSize = 14f
                 gravity = Gravity.CENTER
-                setTextColor(if (isVideo) 0xFF38BDF8.toInt() else 0xFFA78BFA.toInt())
-                background = roundedBox(
-                    if (isVideo) 0xFF17253B.toInt() else 0xFF241D3A.toInt(),
-                    Color.TRANSPARENT,
-                    10
-                )
+                setTextColor(0xFF38BDF8.toInt())
+                background = roundedBox(0xFF17253B.toInt(), Color.TRANSPARENT, 10)
             }
             val titleView = TextView(this@MainActivity).apply {
                 text = title
-                textSize = if (isVideo) 16f else 15f
+                textSize = 16f
                 setTextColor(0xFFF1F5F9.toInt())
                 maxLines = 2
                 ellipsize = TextUtils.TruncateAt.END
             }
-            addView(iconBadge, LinearLayout.LayoutParams(dp(36), dp(36)).apply {
-                marginEnd = dp(12)
+            addView(iconBadge, LinearLayout.LayoutParams(dp(38), dp(38)).apply {
+                marginEnd = dp(14)
             })
             addView(titleView, LinearLayout.LayoutParams(0, -2, 1f))
         }
@@ -638,8 +508,8 @@ class MainActivity : Activity() {
     private fun attachFocusScale(view: View) {
         view.setOnFocusChangeListener { v, hasFocus ->
             v.animate()
-                .scaleX(if (hasFocus) 1.02f else 1f)
-                .scaleY(if (hasFocus) 1.02f else 1f)
+                .scaleX(if (hasFocus) 1.015f else 1f)
+                .scaleY(if (hasFocus) 1.015f else 1f)
                 .setDuration(110)
                 .start()
         }
@@ -667,7 +537,6 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         videoPlayer.release()
-        musicPlayer.release()
         io.shutdownNow()
         super.onDestroy()
     }
